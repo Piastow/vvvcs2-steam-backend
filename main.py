@@ -29,7 +29,7 @@ IGNORED_KEYWORDS = [
     "Pass", "Passe", "Viewer Pass"
 ]
 
-def fetch_steam_market_catalog(pages=200):
+def fetch_steam_market_catalog(pages=100):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
@@ -62,14 +62,12 @@ def fetch_steam_market_catalog(pages=200):
     return all_items
 
 def sync_all_skins_task():
-    print("\n🔄 Iniciando rotina em segundo plano no Render...")
-    steam_items = fetch_steam_market_catalog(pages=200)
+    print("\n🔄 Limpando e ressincronizando imagens e oportunidades...")
+    steam_items = fetch_steam_market_catalog(pages=100)
 
     if not steam_items:
         print("❌ Não foi possível carregar os itens.")
         return
-
-    print(f"📦 Total bruto de itens baixados: {len(steam_items)}")
 
     count = 0
     ignored_count = 0
@@ -93,7 +91,7 @@ def sync_all_skins_task():
         if current_price == 0.0:
             current_price = (item.get("sell_price", 0) or 0) / 100.0
 
-        if current_price < 1.50:
+        if current_price < 2.00:
             ignored_count += 1
             continue
 
@@ -102,6 +100,7 @@ def sync_all_skins_task():
             ignored_count += 1
             continue
             
+        # URL da imagem direta do Cloudflare CDN da Steam
         image_url = f"https://community.cloudflare.steamstatic.com/economy/image/{icon_url}"
 
         if "Knife" in skin_name or "★" in skin_name or "Faca" in skin_name or "Bayonet" in skin_name or "Karambit" in skin_name or "Butterfly" in skin_name:
@@ -121,6 +120,7 @@ def sync_all_skins_task():
         steam_link = f"https://steamcommunity.com/market/listings/730/{requests.utils.quote(skin_name)}"
 
         try:
+            # 1. Salva na tabela skins
             skin_payload = {
                 "market_hash_name": skin_name,
                 "category": category,
@@ -132,6 +132,7 @@ def sync_all_skins_task():
             else:
                 supabase.table("skins").insert(skin_payload).execute()
 
+            # 2. Salva na tabela skin_opportunities INCLUINDO image_url e category
             opportunity_data = {
                 "market_hash_name": skin_name,
                 "current_price": current_price,
@@ -141,7 +142,9 @@ def sync_all_skins_task():
                 "daily_volume": item.get("sell_listings", 150),
                 "trend_score": round(trend_score, 1),
                 "trend_label": "Alta Probabilidade" if trend_score >= 60 else "Estável",
-                "steam_url": steam_link
+                "steam_url": steam_link,
+                "image_url": image_url,
+                "category": category
             }
             check_opp = supabase.table("skin_opportunities").select("id").eq("market_hash_name", skin_name).execute()
             if check_opp.data:
@@ -151,12 +154,12 @@ def sync_all_skins_task():
 
             count += 1
             if count % 25 == 0:
-                print(f"✅ [{count}] Skins processadas no Supabase...")
+                print(f"✅ [{count}] Skins atualizadas com imagem direta...")
 
         except Exception as e:
             print(f"⚠️ Erro ao salvar {skin_name}: {e}")
 
-    print(f"\n🎉 Processamento em segundo plano concluído! Total: {count} skins enviadas.")
+    print(f"\n🎉 Concluído! Total: {count} skins atualizadas com imagem.")
 
 @app.get("/")
 def home():
