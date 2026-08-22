@@ -67,7 +67,7 @@ def sync_all_skins_to_supabase():
     print("\n🔄 Limpando dados antigos e filtrando catálogo de qualidade...")
     
     # 1. Limpa registros fakes ou quebrados antigos se necessário
-    steam_items = fetch_steam_market_catalog(pages=50000)
+    steam_items = fetch_steam_market_catalog(pages=200)
 
     if not steam_items:
         print("❌ Não foi possível carregar os itens.")
