@@ -1,6 +1,6 @@
 import time
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 
@@ -20,7 +20,6 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Palavras-chave de itens indesejados (adesivos de R$ 0,05, graffitis, etc)
 IGNORED_KEYWORDS = [
     "Sticker |", "Adesivo |", 
     "Sealed Graffiti |", "Graffiti |", 
@@ -30,8 +29,7 @@ IGNORED_KEYWORDS = [
     "Pass", "Passe", "Viewer Pass"
 ]
 
-def fetch_steam_market_catalog(pages=30):
-    """Busca os itens mais populares e valiosos do Mercado da Steam"""
+def fetch_steam_market_catalog(pages=200):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
@@ -63,10 +61,8 @@ def fetch_steam_market_catalog(pages=30):
             
     return all_items
 
-def sync_all_skins_to_supabase():
-    print("\n🔄 Limpando dados antigos e filtrando catálogo de qualidade...")
-    
-    # 1. Limpa registros fakes ou quebrados antigos se necessário
+def sync_all_skins_task():
+    print("\n🔄 Iniciando rotina em segundo plano no Render...")
     steam_items = fetch_steam_market_catalog(pages=200)
 
     if not steam_items:
@@ -74,7 +70,6 @@ def sync_all_skins_to_supabase():
         return
 
     print(f"📦 Total bruto de itens baixados: {len(steam_items)}")
-    print("🧹 Filtrando skins válidas, com imagem e preço > R$ 1.50...\n")
 
     count = 0
     ignored_count = 0
@@ -84,12 +79,10 @@ def sync_all_skins_to_supabase():
         if not skin_name:
             continue
 
-        # FILTRO 1: Ignora Adesivos, Graffitis, Chaveiros, etc.
         if any(keyword.lower() in skin_name.lower() for keyword in IGNORED_KEYWORDS):
             ignored_count += 1
             continue
 
-        # FILTRO 2: Trata Preço
         raw_price_str = item.get("sell_price_text", "0")
         raw_p = raw_price_str.replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".")
         try:
@@ -100,12 +93,10 @@ def sync_all_skins_to_supabase():
         if current_price == 0.0:
             current_price = (item.get("sell_price", 0) or 0) / 100.0
 
-        # Ignora itens abaixo de R$ 1,50 (remover tranqueiras)
         if current_price < 1.50:
             ignored_count += 1
             continue
 
-        # FILTRO 3: Imagem Obrigatória
         icon_url = item.get("asset_description", {}).get("icon_url", "")
         if not icon_url:
             ignored_count += 1
@@ -113,7 +104,6 @@ def sync_all_skins_to_supabase():
             
         image_url = f"https://community.cloudflare.steamstatic.com/economy/image/{icon_url}"
 
-        # Categorização Inteligente
         if "Knife" in skin_name or "★" in skin_name or "Faca" in skin_name or "Bayonet" in skin_name or "Karambit" in skin_name or "Butterfly" in skin_name:
             category = "Faca"
         elif "Gloves" in skin_name or "Luvas" in skin_name or "Hand Wraps" in skin_name:
@@ -131,7 +121,6 @@ def sync_all_skins_to_supabase():
         steam_link = f"https://steamcommunity.com/market/listings/730/{requests.utils.quote(skin_name)}"
 
         try:
-            # Salva na tabela 'skins'
             skin_payload = {
                 "market_hash_name": skin_name,
                 "category": category,
@@ -143,7 +132,6 @@ def sync_all_skins_to_supabase():
             else:
                 supabase.table("skins").insert(skin_payload).execute()
 
-            # Salva na tabela 'skin_opportunities'
             opportunity_data = {
                 "market_hash_name": skin_name,
                 "current_price": current_price,
@@ -162,19 +150,19 @@ def sync_all_skins_to_supabase():
                 supabase.table("skin_opportunities").insert(opportunity_data).execute()
 
             count += 1
-            if count % 20 == 0:
-                print(f"✅ [{count}] Skins filtradas salvas no Supabase...")
+            if count % 25 == 0:
+                print(f"✅ [{count}] Skins processadas no Supabase...")
 
         except Exception as e:
             print(f"⚠️ Erro ao salvar {skin_name}: {e}")
 
-    print(f"\n🎉 Limpeza concluída! {count} skins de alta qualidade salvas. ({ignored_count} itens indesejados ignorados)")
+    print(f"\n🎉 Processamento em segundo plano concluído! Total: {count} skins enviadas.")
 
 @app.get("/")
 def home():
     return {"status": "Servidor rodando!"}
 
 @app.get("/sync")
-def trigger_sync():
-    sync_all_skins_to_supabase()
-    return {"status": "Sincronização limpa e filtrada executada com sucesso!"}
+def trigger_sync(background_tasks: BackgroundTasks):
+    background_tasks.add_task(sync_all_skins_task)
+    return {"status": "Sincronização iniciada em segundo plano com sucesso!"}
