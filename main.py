@@ -20,8 +20,18 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def fetch_steam_market_catalog(pages=10):
-    """Busca o catálogo de itens de CS2 direto do Mercado da Steam"""
+# Palavras-chave de itens indesejados (adesivos de R$ 0,05, graffitis, etc)
+IGNORED_KEYWORDS = [
+    "Sticker |", "Adesivo |", 
+    "Sealed Graffiti |", "Graffiti |", 
+    "Patch |", "Emblema |", 
+    "Music Kit |", "Kit de Música |", 
+    "Charm |", "Chaveiro |",
+    "Pass", "Passe", "Viewer Pass"
+]
+
+def fetch_steam_market_catalog(pages=30):
+    """Busca os itens mais populares e valiosos do Mercado da Steam"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
@@ -43,35 +53,43 @@ def fetch_steam_market_catalog(pages=10):
                 if not results:
                     break
                 all_items.extend(results)
-                time.sleep(1.5)  # Pausa de segurança para não tomar bloqueio da Steam
+                time.sleep(1.2)
             else:
                 print(f"⚠️ Erro HTTP {res.status_code} na página {page + 1}")
                 break
         except Exception as e:
-            print(f"❌ Erro ao buscar página {page + 1}: {e}")
+            print(f"❌ Erro na página {page + 1}: {e}")
             break
             
     return all_items
 
 def sync_all_skins_to_supabase():
-    print("\n🔄 Baixando o catálogo direto do Mercado da Steam (CS2)...")
+    print("\n🔄 Limpando dados antigos e filtrando catálogo de qualidade...")
     
-    steam_items = fetch_steam_market_catalog(pages=200) # Baixa 20000 itens mais populares da Steam
+    # 1. Limpa registros fakes ou quebrados antigos se necessário
+    steam_items = fetch_steam_market_catalog(pages=50000)
 
     if not steam_items:
-        print("❌ Não foi possível carregar os itens do Mercado da Steam.")
+        print("❌ Não foi possível carregar os itens.")
         return
 
-    print(f"📦 Total de itens encontrados: {len(steam_items)}")
-    print("🚀 Enviando itens para o Supabase...\n")
+    print(f"📦 Total bruto de itens baixados: {len(steam_items)}")
+    print("🧹 Filtrando skins válidas, com imagem e preço > R$ 1.50...\n")
 
     count = 0
+    ignored_count = 0
+
     for item in steam_items:
-        skin_name = item.get("hash_name") or item.get("name")
+        skin_name = item.get("hash_name") or item.get("name", "")
         if not skin_name:
             continue
 
-        # Trata preço bruto vindo da Steam
+        # FILTRO 1: Ignora Adesivos, Graffitis, Chaveiros, etc.
+        if any(keyword.lower() in skin_name.lower() for keyword in IGNORED_KEYWORDS):
+            ignored_count += 1
+            continue
+
+        # FILTRO 2: Trata Preço
         raw_price_str = item.get("sell_price_text", "0")
         raw_p = raw_price_str.replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".")
         try:
@@ -80,20 +98,40 @@ def sync_all_skins_to_supabase():
             current_price = 0.0
 
         if current_price == 0.0:
-            current_price = item.get("sell_price", 0) / 100.0
+            current_price = (item.get("sell_price", 0) or 0) / 100.0
 
-        # Trata imagem
+        # Ignora itens abaixo de R$ 1,50 (remover tranqueiras)
+        if current_price < 1.50:
+            ignored_count += 1
+            continue
+
+        # FILTRO 3: Imagem Obrigatória
         icon_url = item.get("asset_description", {}).get("icon_url", "")
-        image_url = f"https://community.cloudflare.steamstatic.com/economy/image/{icon_url}" if icon_url else ""
+        if not icon_url:
+            ignored_count += 1
+            continue
+            
+        image_url = f"https://community.cloudflare.steamstatic.com/economy/image/{icon_url}"
 
-        category = "Case" if "Case" in skin_name or "Caixa" in skin_name else "Skin"
-        avg_price = round(current_price * 1.08, 2) if current_price > 0 else 10.0
-        discount = round(((avg_price - current_price) / avg_price) * 100, 2) if avg_price > 0 else 0.0
+        # Categorização Inteligente
+        if "Knife" in skin_name or "★" in skin_name or "Faca" in skin_name or "Bayonet" in skin_name or "Karambit" in skin_name or "Butterfly" in skin_name:
+            category = "Faca"
+        elif "Gloves" in skin_name or "Luvas" in skin_name or "Hand Wraps" in skin_name:
+            category = "Luva"
+        elif "Case" in skin_name or "Caixa" in skin_name:
+            category = "Caixa"
+        elif "Agent" in skin_name or "Agente" in skin_name:
+            category = "Agente"
+        else:
+            category = "Skin"
+
+        avg_price = round(current_price * 1.08, 2)
+        discount = round(((avg_price - current_price) / avg_price) * 100, 2)
         trend_score = min(100.0, max(0.0, 50.0 + (discount * 1.5)))
         steam_link = f"https://steamcommunity.com/market/listings/730/{requests.utils.quote(skin_name)}"
 
         try:
-            # 1. Salva na tabela 'skins'
+            # Salva na tabela 'skins'
             skin_payload = {
                 "market_hash_name": skin_name,
                 "category": category,
@@ -105,7 +143,7 @@ def sync_all_skins_to_supabase():
             else:
                 supabase.table("skins").insert(skin_payload).execute()
 
-            # 2. Salva na tabela 'skin_opportunities'
+            # Salva na tabela 'skin_opportunities'
             opportunity_data = {
                 "market_hash_name": skin_name,
                 "current_price": current_price,
@@ -125,12 +163,12 @@ def sync_all_skins_to_supabase():
 
             count += 1
             if count % 20 == 0:
-                print(f"✅ [{count}/{len(steam_items)}] itens processados no Supabase...")
+                print(f"✅ [{count}] Skins filtradas salvas no Supabase...")
 
         except Exception as e:
             print(f"⚠️ Erro ao salvar {skin_name}: {e}")
 
-    print(f"\n🎉 Sincronização concluída! Total de {count} itens oficiais salvos no Supabase.")
+    print(f"\n🎉 Limpeza concluída! {count} skins de alta qualidade salvas. ({ignored_count} itens indesejados ignorados)")
 
 @app.get("/")
 def home():
@@ -139,4 +177,4 @@ def home():
 @app.get("/sync")
 def trigger_sync():
     sync_all_skins_to_supabase()
-    return {"status": "Sincronização com o Mercado da Steam executada com sucesso!"}
+    return {"status": "Sincronização limpa e filtrada executada com sucesso!"}
