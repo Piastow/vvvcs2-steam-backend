@@ -3,6 +3,7 @@ import requests
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
+from predictions import calculate_item_projections
 
 app = FastAPI()
 
@@ -62,7 +63,7 @@ def fetch_steam_market_catalog(pages=100):
     return all_items
 
 def sync_all_skins_task():
-    print("\n🔄 Limpando e ressincronizando imagens e oportunidades...")
+    print("\n🔄 Limpando e ressincronizando imagens, oportunidades e projeções...")
     steam_items = fetch_steam_market_catalog(pages=100)
 
     if not steam_items:
@@ -118,6 +119,15 @@ def sync_all_skins_task():
         discount = round(((avg_price - current_price) / avg_price) * 100, 2)
         trend_score = min(100.0, max(0.0, 50.0 + (discount * 1.5)))
         steam_link = f"https://steamcommunity.com/market/listings/730/{requests.utils.quote(skin_name)}"
+        daily_volume = item.get("sell_listings", 150)
+
+        # Cálculo Preditivo
+        projections = calculate_item_projections(
+            current_price=current_price,
+            avg_30d=avg_price,
+            daily_volume=daily_volume,
+            category=category
+        )
 
         try:
             # 1. Salva na tabela skins
@@ -132,19 +142,23 @@ def sync_all_skins_task():
             else:
                 supabase.table("skins").insert(skin_payload).execute()
 
-            # 2. Salva na tabela skin_opportunities INCLUINDO image_url e category
+            # 2. Salva na tabela skin_opportunities INCLUINDO Projeções Futuras
             opportunity_data = {
                 "market_hash_name": skin_name,
                 "current_price": current_price,
                 "avg_price_7d": avg_price,
                 "avg_price_30d": avg_price,
                 "discount_pct": discount,
-                "daily_volume": item.get("sell_listings", 150),
+                "daily_volume": daily_volume,
                 "trend_score": round(trend_score, 1),
                 "trend_label": "Alta Probabilidade" if trend_score >= 60 else "Estável",
                 "steam_url": steam_link,
                 "image_url": image_url,
-                "category": category
+                "category": category,
+                "projected_30d": projections["projected_30d"] if projections else None,
+                "projected_90d": projections["projected_90d"] if projections else None,
+                "projected_365d": projections["projected_365d"] if projections else None,
+                "confidence": projections["confidence"] if projections else "BAIXA"
             }
             check_opp = supabase.table("skin_opportunities").select("id").eq("market_hash_name", skin_name).execute()
             if check_opp.data:
@@ -154,12 +168,12 @@ def sync_all_skins_task():
 
             count += 1
             if count % 25 == 0:
-                print(f"✅ [{count}] Skins atualizadas com imagem direta...")
+                print(f"✅ [{count}] Skins e projeções salvas...")
 
         except Exception as e:
             print(f"⚠️ Erro ao salvar {skin_name}: {e}")
 
-    print(f"\n🎉 Concluído! Total: {count} skins atualizadas com imagem.")
+    print(f"\n🎉 Concluído! Total: {count} skins atualizadas com projeções.")
 
 @app.get("/")
 def home():
