@@ -121,7 +121,7 @@ def sync_all_skins_task():
         steam_link = f"https://steamcommunity.com/market/listings/730/{requests.utils.quote(skin_name)}"
         daily_volume = item.get("sell_listings", 150)
 
-        # Cálculo Preditivo
+        # Cálculo Preditivo usando o predictions.py
         projections = calculate_item_projections(
             current_price=current_price,
             avg_30d=avg_price,
@@ -142,7 +142,7 @@ def sync_all_skins_task():
             else:
                 supabase.table("skins").insert(skin_payload).execute()
 
-            # 2. Salva na tabela skin_opportunities INCLUINDO Projeções Futuras
+            # 2. Salva na tabela skin_opportunities INCLUINDO Projeções
             opportunity_data = {
                 "market_hash_name": skin_name,
                 "current_price": current_price,
